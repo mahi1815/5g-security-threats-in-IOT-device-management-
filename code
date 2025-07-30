@@ -1,0 +1,166 @@
+!pip install pandas numpy scikit-learn pycryptodome matplotlib seaborn flask joblib
+
+from google.colab import files
+uploaded = files.upload()
+
+dataset_path = '/content/ton-iot (2).csv'
+
+# === Imports ===
+import hashlib
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# === Hash Function ===
+def hash_feature(value):
+    return int(hashlib.sha256(str(value).encode()).hexdigest(), 16) % (10 ** 8)
+
+# === Real-Time Input Feature Extraction ===
+def process_input(ip, port):
+    return [hash_feature(ip), hash_feature(port)]
+
+# === Data Preprocessing ===
+def load_and_preprocess_data(path):
+    df = pd.read_csv(path)
+    df = df.dropna()
+
+    df['src_ip'] = df['src_ip'].apply(hash_feature)
+    df['dst_ip'] = df['dst_ip'].apply(hash_feature)
+    df['src_port'] = df['src_port'].apply(hash_feature)
+    df['dst_port'] = df['dst_port'].apply(hash_feature)
+
+    for col in df.select_dtypes(include=['object']).columns:
+        if col != 'label':
+            df[col] = df[col].astype(str).apply(hash_feature)
+    if 'label' in df.columns:
+        label_encoder = LabelEncoder()
+        df['label'] = label_encoder.fit_transform(df['label'])
+
+    X = df.drop('label', axis=1)
+    y = df['label']
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+# === Train, Evaluate, and Plot ===
+def evaluate_models_with_plots(X_train, X_test, y_train, y_test):
+    models = {
+        'RandomForest': RandomForestClassifier(),
+        'SVM': SVC(),
+        'MLP': MLPClassifier(max_iter=1000),
+        'DecisionTree': DecisionTreeClassifier(),
+        'LogisticRegression': LogisticRegression(max_iter=1000),
+        'NaiveBayes': GaussianNB(),
+        'GradientBoosting': GradientBoostingClassifier()
+    }
+
+    rf_param_grid = {'n_estimators': [100], 'max_depth': [10], 'min_samples_split': [2], 'min_samples_leaf': [1]}
+    gb_param_grid = {'n_estimators': [100], 'learning_rate': [0.1], 'max_depth': [3], 'subsample': [1.0]}
+
+    metrics = {'Model': [], 'Accuracy': [], 'F1 Score': []}
+    tuned_models = {}
+
+    for name, model in models.items():
+        print(f"\n--- Tuning {name} ---")
+        if name == "RandomForest":
+            grid_search = GridSearchCV(model, rf_param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+        elif name == "GradientBoosting":
+            grid_search = GridSearchCV(model, gb_param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+        else:
+            grid_search = GridSearchCV(model, {}, cv=5, scoring='accuracy', n_jobs=-1)
+
+        grid_search.fit(X_train, y_train)
+        best_model = grid_search.best_estimator_
+        tuned_models[name] = best_model
+
+        predictions = best_model.predict(X_test)
+        acc = accuracy_score(y_test, predictions)
+        f1 = f1_score(y_test, predictions, average='weighted')
+
+        metrics['Model'].append(name)
+        metrics['Accuracy'].append(acc)
+        metrics['F1 Score'].append(f1)
+
+        print(f"Best Params: {grid_search.best_params_}")
+        print("Accuracy:", acc)
+        print("F1 Score:", f1)
+        print("Classification Report:\n", classification_report(y_test, predictions))
+        print("Confusion Matrix:\n", confusion_matrix(y_test, predictions))
+
+        # Confusion Matrix Plot
+        plt.figure(figsize=(6, 4))
+        sns.heatmap(confusion_matrix(y_test, predictions), annot=True, fmt='d', cmap='Blues')
+        plt.title(f'Confusion Matrix - {name}')
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.tight_layout()
+        plt.show()
+
+    # Accuracy & F1 Score Plot
+    plt.figure(figsize=(10, 5))
+    x = np.arange(len(metrics['Model']))
+    width = 0.35
+
+    plt.bar(x - width/2, metrics['Accuracy'], width, label='Accuracy', color='skyblue')
+    plt.bar(x + width/2, metrics['F1 Score'], width, label='F1 Score', color='salmon')
+    plt.ylabel('Score')
+    plt.title('Model Performance Comparison')
+    plt.xticks(x, metrics['Model'], rotation=45)
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    # Voting Classifier
+    voting_clf = VotingClassifier(estimators=[(name, model) for name, model in tuned_models.items()], voting='hard')
+    voting_clf.fit(X_train, y_train)
+    voting_predictions = voting_clf.predict(X_test)
+    voting_acc = accuracy_score(y_test, voting_predictions)
+    voting_f1 = f1_score(y_test, voting_predictions, average='weighted')
+
+    print("\n--- Voting Classifier ---")
+    print("Accuracy:", voting_acc)
+    print("F1 Score:", voting_f1)
+    print("Classification Report:\n", classification_report(y_test, voting_predictions))
+    print("Confusion Matrix:\n", confusion_matrix(y_test, voting_predictions))
+
+    # Voting Confusion Matrix Plot
+    plt.figure(figsize=(6, 4))
+    sns.heatmap(confusion_matrix(y_test, voting_predictions), annot=True, fmt='d', cmap='Purples')
+    plt.title('Confusion Matrix - Voting Classifier')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.tight_layout()
+    plt.show()
+
+# === Main ===
+X_train, X_test, y_train, y_test = load_and_preprocess_data(dataset_path)
+evaluate_models_with_plots(X_train, X_test, y_train, y_test)
+
+# === Real-Time Detection Example ===
+print("\n--- Real-Time Detection Example ---")
+ip_input = input("Enter masked IP (e.g., 192.168.1.1): ")
+port_input = input("Enter masked Port (e.g., 8080): ")
+
+features = process_input(ip_input, port_input)
+features += [0] * (X_train.shape[1] - 2)  # Pad with zeros
+
+model = GradientBoostingClassifier()
+model.fit(X_train, y_train)
+prediction = model.predict([features])[0]
+print("Predicted class:", prediction)
+
+
+  
